@@ -1,0 +1,37 @@
+name: "EC2 Deploy Action"
+description: "Check or create EC2 instance and run SSH script to start Flask server"
+
+inputs:
+  region: { required: true }
+  ami-id: { required: true }
+  instance-type: { required: true }
+  key-name: { required: true }
+  ssh-key: { required: true }
+  tag-value: { required: false, default: fruitstore-ec2 }
+  script-path: { required: false, default: scripts/setup.sh }
+
+runs:
+  using: "composite"
+  steps:
+    - uses: actions/setup-python@v4
+      with:
+        python-version: '3.12'
+
+    - run: pip install -r requirements.txt
+      shell: bash
+
+    - run: |
+        echo "${{ inputs.ssh-key }}" > fruitstore.pem
+        chmod 400 fruitstore.pem
+      shell: bash
+
+    - run: |
+        python src/deploy.py \
+          --region "${{ inputs.region }}" \
+          --ami-id "${{ inputs.ami-id }}" \
+          --instance-type "${{ inputs.instance-type }}" \
+          --key-name "${{ inputs.key-name }}" \
+          --tag-value "${{ inputs.tag-value }}" \
+          --ssh-key-path fruitstore.pem \
+          --script-path "${{ inputs.script-path }}"
+      shell: bash
