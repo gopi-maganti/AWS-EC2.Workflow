@@ -4,7 +4,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 
 import pytest
 from unittest.mock import patch, MagicMock
-from src.check_instance import instance_exists, create_instance, get_instance_public_ip
+from src.check_instance import instance_exists, get_or_create_instance, get_instance_public_ip
 
 REGION = "us-east-1"
 INSTANCE_ID = "i-1234567890abcdef0"
@@ -56,7 +56,7 @@ def test_create_instance(mock_boto):
 
     mock_boto.return_value = mock_ec2
 
-    result = create_instance(REGION, AMI_ID, INSTANCE_TYPE, KEY_NAME)
+    result = get_or_create_instance(REGION, AMI_ID, INSTANCE_TYPE, KEY_NAME)
 
     assert result == INSTANCE_ID
     mock_ec2.run_instances.assert_called_once()
