@@ -4,6 +4,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 
 import pytest
 from unittest.mock import patch, MagicMock
+from botocore.exceptions import ClientError
 from src.check_instance import instance_exists, get_or_create_instance, get_instance_public_ip
 
 REGION = "us-east-1"
@@ -36,7 +37,12 @@ def test_instance_exists_false(mock_boto):
 @patch("boto3.client")
 def test_instance_exists_exception(mock_boto):
     mock_ec2 = MagicMock()
-    mock_ec2.describe_instances.side_effect = Exception("Test error")
+    mock_ec2.describe_instances.side_effect = ClientError(
+        error_response={
+            "Error": {"Code": "InvalidInstanceID.NotFound", "Message": "Test error"}
+        },
+        operation_name="DescribeInstances"
+    )
     mock_boto.return_value = mock_ec2
 
     assert instance_exists(INSTANCE_ID, REGION) is False
