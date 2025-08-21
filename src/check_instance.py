@@ -2,6 +2,7 @@ import boto3
 import paramiko
 import time
 import logging
+import argparse
 from botocore.exceptions import ClientError, WaiterError
 
 # -----------------------------
@@ -16,7 +17,6 @@ logger = logging.getLogger(__name__)
 # -----------------------------
 # Check if an EC2 instance exists
 # -----------------------------
-
 def instance_exists(instance_id, region):
     ec2 = boto3.client("ec2", region_name=region)
     try:
@@ -157,3 +157,43 @@ def run_script_over_ssh(ip_address, ssh_key_path, script_path, username="ec2-use
     except Exception as e:
         logger.exception(f"Error running SSH command on EC2 {ip_address}")
         raise
+
+
+# -----------------------------
+# Main Execution Block
+# -----------------------------
+def main():
+    parser = argparse.ArgumentParser(description="Check or create EC2 and run setup script")
+
+    parser.add_argument("--region", required=True, help="AWS region")
+    parser.add_argument("--ami-id", required=True, help="AMI ID")
+    parser.add_argument("--instance-type", required=True, help="EC2 instance type")
+    parser.add_argument("--key-name", required=True, help="Key pair name")
+    parser.add_argument("--tag-value", default="fruitstore-ec2", help="EC2 tag value")
+    parser.add_argument("--ssh-key-path", required=True, help="Path to SSH private key (PEM)")
+    parser.add_argument("--script-path", default="scripts/setup.sh", help="Path to setup script")
+
+    args = parser.parse_args()
+
+    # Step 1: Get or create EC2 instance
+    instance_id = get_or_create_instance(
+        region=args.region,
+        ami_id=args.ami_id,
+        instance_type=args.instance_type,
+        key_name=args.key_name,
+        tag_key="Name",
+        tag_value=args.tag_value
+    )
+
+    # Step 2: Get public IP
+    ip_address = get_instance_public_ip(instance_id, args.region)
+    if not ip_address:
+        logger.error("Public IP could not be retrieved.")
+        exit(1)
+
+    # Step 3: Run setup script via SSH
+    run_script_over_ssh(ip_address, args.ssh_key_path, args.script_path)
+
+
+if __name__ == "__main__":
+    main()
