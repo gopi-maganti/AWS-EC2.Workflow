@@ -34,7 +34,6 @@ def _load_public_key_from_private(ssh_private_key_path: str) -> str:
         paramiko.RSAKey.from_private_key_file,
         paramiko.ECDSAKey.from_private_key_file,
         paramiko.Ed25519Key.from_private_key_file,
-        paramiko.DSSKey.from_private_key_file,
     ]
     last_err = None
     for loader in loaders:
