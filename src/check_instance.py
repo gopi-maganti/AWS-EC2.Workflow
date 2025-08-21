@@ -14,6 +14,98 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+
+# -----------------------------
+# Load Public Key from Private Key
+# -----------------------------
+def _load_public_key_from_private(ssh_private_key_path: str) -> str:
+    """
+    Build an OpenSSH-formatted public key string from a private key file.
+    Supports RSA, ECDSA, ED25519, and DSS.
+    Returns: e.g. 'ssh-rsa AAAAB3...'
+
+    Args:
+        ssh_private_key_path: Path to the private key file (.pem)
+
+    Raises:
+        RuntimeError: If the key cannot be parsed or is of an unsupported type.
+    """
+    loaders = [
+        paramiko.RSAKey.from_private_key_file,
+        paramiko.ECDSAKey.from_private_key_file,
+        paramiko.Ed25519Key.from_private_key_file,
+        paramiko.DSSKey.from_private_key_file,
+    ]
+    last_err = None
+    for loader in loaders:
+        try:
+            key = loader(ssh_private_key_path)
+            return f"{key.get_name()} {key.get_base64()}"
+        except Exception as e:
+            last_err = e
+            continue
+    raise RuntimeError(f"Unable to parse private key at {ssh_private_key_path}: {last_err}")
+
+
+# -----------------------------
+# Ensure EC2 Key Pair Exists
+# -----------------------------
+def ensure_key_pair(region: str, key_name: str, *, public_key_path: str | None = None,
+                    private_key_path: str | None = None) -> None:
+    """
+    Ensure an EC2 key pair named `key_name` exists in `region`.
+    - If it exists: do nothing.
+    - If missing: import using either `public_key_path` (.pub) or derive from `private_key_path` (.pem).
+
+    Args:
+        region: AWS region (e.g. 'us-east-1')
+        key_name: Name of the EC2 key pair
+        public_key_path: Path to the public key file (.pub)
+        private_key_path: Path to the private key file (.pem)
+
+    Raises:
+        ValueError: If neither or both of public_key_path and private_key_path are provided.
+        ClientError: If AWS API calls fail.
+    """
+    ec2 = boto3.client("ec2", region_name=region)
+
+    # Check if already a key pair exists
+    try:
+        ec2.describe_key_pairs(KeyNames=[key_name])
+        logger.info(f"EC2 key pair '{key_name}' already exists in {region}.")
+        return
+    except ClientError as e:
+        # If it's truly missing, AWS returns InvalidKeyPair.NotFound
+        if e.response.get("Error", {}).get("Code") != "InvalidKeyPair.NotFound":
+            logger.error(f"Failed describing key pair '{key_name}': {e}")
+            raise
+        logger.info(f"EC2 key pair '{key_name}' not found; importing...")
+
+    # Obtain public key material
+    if public_key_path:
+        with open(public_key_path, "r", encoding="utf-8") as f:
+            public_key_material = f.read().strip()
+    elif private_key_path:
+        public_key_material = _load_public_key_from_private(private_key_path)
+    else:
+        raise ValueError("You must provide either public_key_path or private_key_path to import key pair.")
+
+    # Import the key pair
+    try:
+        ec2.import_key_pair(
+            KeyName=key_name,
+            PublicKeyMaterial=public_key_material.encode("utf-8")
+        )
+        logger.info(f"Imported EC2 key pair '{key_name}' into {region}.")
+    except ClientError as e:
+        # If there is a race and another job imported it, be tolerant
+        if e.response.get("Error", {}).get("Code") == "InvalidKeyPair.Duplicate":
+            logger.info(f"Key pair '{key_name}' was created concurrently; continuing.")
+            return
+        logger.error(f"Failed to import key pair '{key_name}': {e}")
+        raise
+
+
 # -----------------------------
 # Check if an EC2 instance exists
 # -----------------------------
@@ -39,6 +131,14 @@ def instance_exists(instance_id, region):
 def get_or_create_instance(region, ami_id, instance_type, key_name, tag_key="Name", tag_value="fruitstore-ec2"):
     ec2 = boto3.client("ec2", region_name=region)
 
+    # Ensure the key pair exists before any RunInstances call
+    # We use the private key file that your action writes as 'fruitstore.pem'
+    try:
+        ensure_key_pair(region, key_name, private_key_path="fruitstore.pem")
+    except Exception:
+        logger.error("Could not ensure/import EC2 key pair; aborting instance creation.")
+        raise
+
     try:
         logger.info(f"Checking for existing EC2 instance with tag [{tag_key}: {tag_value}] in region {region}...")
         response = ec2.describe_instances(
@@ -47,19 +147,16 @@ def get_or_create_instance(region, ami_id, instance_type, key_name, tag_key="Nam
                 {"Name": "instance-state-name", "Values": ["pending", "running"]}
             ]
         )
-
         for reservation in response["Reservations"]:
             for instance in reservation["Instances"]:
                 logger.info(f"Reusing existing instance: {instance['InstanceId']}")
                 return instance["InstanceId"]
-
     except ClientError as e:
         logger.error(f"Error while describing instances: {e}")
         raise
 
     try:
         logger.info("No existing instance found. Creating new EC2 instance...")
-
         instances = ec2.run_instances(
             ImageId=ami_id,
             InstanceType=instance_type,
@@ -83,14 +180,13 @@ def get_or_create_instance(region, ami_id, instance_type, key_name, tag_key="Nam
     except ClientError as e:
         logger.error(f"Failed to create EC2 instance: {e}")
         raise
-
     except WaiterError as e:
         logger.error(f"Waiter failed while waiting for instance to run: {e}")
         raise
-
     except Exception as e:
         logger.exception("Unexpected error during instance creation")
         raise
+
 
 
 # -----------------------------
