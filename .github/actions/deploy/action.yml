@@ -2,13 +2,14 @@ name: "EC2 Deploy Action"
 description: "Check or create EC2 instance and run SSH script to start Flask server"
 
 inputs:
-  region: { required: true }
-  ami-id: { required: true }
-  instance-type: { required: true }
-  key-name: { required: true }
-  ssh-key: { required: true }
-  tag-value: { required: false, default: fruitstore-ec2 }
-  script-path: { required: false, default: scripts/setup.sh }
+  region:         { required: true }
+  ami-id:         { required: true }
+  instance-type:  { required: true }
+  key-name:       { required: true }
+  ssh-private-key: { required: true }
+  ssh-public-key: { required: false }
+  tag-value:      { required: false, default: fruitstore-ec2 }
+  script-path:    { required: false, default: scripts/setup.sh }
 
 runs:
   using: "composite"
@@ -20,12 +21,18 @@ runs:
     - run: pip install -r requirements.txt
       shell: bash
 
-    - run: |
-        echo "${{ inputs.EC2_SSH_KEY }}" > fruitstore.pem
-        chmod 400 fruitstore.pem
+    # write keys; use printf to preserve exact content
+    - name: Write SSH keys
       shell: bash
+      run: |
+        printf "%s" "${{ inputs.ssh-private-key }}" > fruitstore.pem
+        chmod 400 fruitstore.pem
+        if [ -n "${{ inputs.ssh-public-key }}" ]; then
+          printf "%s" "${{ inputs.ssh-public-key }}" > fruitstore.pub
+        fi
 
-    - run: |
+    - shell: bash
+      run: |
         python src/check_instance.py \
           --region "${{ inputs.region }}" \
           --ami-id "${{ inputs.ami-id }}" \
@@ -33,5 +40,5 @@ runs:
           --key-name "${{ inputs.key-name }}" \
           --tag-value "${{ inputs.tag-value }}" \
           --ssh-key-path fruitstore.pem \
+          --public-key-path fruitstore.pub \
           --script-path "${{ inputs.script-path }}"
-      shell: bash
