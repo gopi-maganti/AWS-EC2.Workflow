@@ -6,6 +6,7 @@ inputs:
   ami-id: { required: true }
   instance-type: { required: true }
   key-name: { required: true }
+  ssh-key: { required: true }
   tag-value: { required: false, default: fruitstore-ec2 }
   script-path: { required: false, default: scripts/setup.sh }
 
