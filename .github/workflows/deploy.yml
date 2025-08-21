@@ -1,4 +1,4 @@
-name: Deploy EC2 and Start Flask Server
+name: Deploy
 
 on:
   workflow_dispatch:
@@ -8,7 +8,7 @@ on:
         required: true
         default: "us-east-1"
       ami-id:
-        description: "AMI ID for EC2"
+        description: "AMI ID"
         required: true
       instance-type:
         description: "EC2 instance type"
@@ -18,28 +18,39 @@ on:
         description: "EC2 key pair name"
         required: true
       tag-value:
-        description: "EC2 instance tag name (optional)"
+        description: "Tag value for idempotency"
         required: false
         default: "fruitstore-ec2"
       script-path:
-        description: "Path to the SSH setup script"
+        description: "Path to setup script"
         required: false
         default: "scripts/setup.sh"
+
+permissions:
+  id-token: write
+  contents: read
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
-
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v3
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::611771051034:role/GitHubOIDCDeployRole
+          aws-region: ${{ github.event.inputs.region }}
 
       - name: Run custom EC2 deploy action
         uses: ./.github/actions/deploy
         with:
-          region: ${{ github.event.inputs.region }}
-          ami-id: ${{ github.event.inputs.ami-id }}
-          instance-type: ${{ github.event.inputs.instance-type }}
-          key-name: ${{ github.event.inputs.key-name }}
-          tag-value: ${{ github.event.inputs.tag-value }}
-          script-path: ${{ github.event.inputs.script-path }}
+          region:        ${{ github.event.inputs.region }}
+          ami-id:        ${{ github.event.inputs['ami-id'] }}
+          instance-type: ${{ github.event.inputs['instance-type'] }}
+          key-name:      ${{ github.event.inputs['key-name'] }}
+          tag-value:     ${{ github.event.inputs['tag-value'] }}
+          script-path:   ${{ github.event.inputs['script-path'] }}
+          ssh-key:       ${{ secrets.EC2_SSH_KEY }}   # <-- pass secret here
