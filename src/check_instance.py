@@ -1,8 +1,10 @@
+import os
+import time
+import argparse
+import logging
+
 import boto3
 import paramiko
-import time
-import logging
-import argparse
 from botocore.exceptions import ClientError, WaiterError
 
 # -----------------------------
@@ -10,32 +12,27 @@ from botocore.exceptions import ClientError, WaiterError
 # -----------------------------
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s"
+    format="%(asctime)s [%(levelname)s] %(message)s",
 )
 logger = logging.getLogger(__name__)
 
 
 # -----------------------------
-# Load Public Key from Private Key
+# Public key helpers
 # -----------------------------
 def _load_public_key_from_private(ssh_private_key_path: str) -> str:
     """
     Build an OpenSSH-formatted public key string from a private key file.
-    Supports RSA, ECDSA, ED25519, and DSS.
+    Supports RSA and ECDSA (common for EC2).
     Returns: e.g. 'ssh-rsa AAAAB3...'
-
-    Args:
-        ssh_private_key_path: Path to the private key file (.pem)
-
-    Raises:
-        RuntimeError: If the key cannot be parsed or is of an unsupported type.
     """
     loaders = [
         paramiko.RSAKey.from_private_key_file,
         paramiko.ECDSAKey.from_private_key_file,
-        paramiko.Ed25519Key.from_private_key_file,
+        # If your runners have lib for Ed25519, you can enable the next line:
+        # paramiko.Ed25519Key.from_private_key_file,
     ]
-    last_err = None
+    last_err: Exception | None = None
     for loader in loaders:
         try:
             key = loader(ssh_private_key_path)
@@ -46,114 +43,121 @@ def _load_public_key_from_private(ssh_private_key_path: str) -> str:
     raise RuntimeError(f"Unable to parse private key at {ssh_private_key_path}: {last_err}")
 
 
-# -----------------------------
-# Ensure EC2 Key Pair Exists
-# -----------------------------
-def ensure_key_pair(region: str, key_name: str, *, public_key_path: str | None = None,
-                    private_key_path: str | None = None) -> None:
+def ensure_key_pair(
+    region: str,
+    key_name: str,
+    *,
+    public_key_path: str | None = None,
+    private_key_path: str | None = None,
+) -> None:
     """
     Ensure an EC2 key pair named `key_name` exists in `region`.
-    - If it exists: do nothing.
-    - If missing: import using either `public_key_path` (.pub) or derive from `private_key_path` (.pem).
-
-    Args:
-        region: AWS region (e.g. 'us-east-1')
-        key_name: Name of the EC2 key pair
-        public_key_path: Path to the public key file (.pub)
-        private_key_path: Path to the private key file (.pem)
-
-    Raises:
-        ValueError: If neither or both of public_key_path and private_key_path are provided.
-        ClientError: If AWS API calls fail.
+    If missing, import using either `public_key_path` (.pub) or derive from `private_key_path` (.pem).
     """
     ec2 = boto3.client("ec2", region_name=region)
 
-    # Check if already a key pair exists
+    # Already exists?
     try:
         ec2.describe_key_pairs(KeyNames=[key_name])
         logger.info(f"EC2 key pair '{key_name}' already exists in {region}.")
         return
     except ClientError as e:
-        # If it's truly missing, AWS returns InvalidKeyPair.NotFound
         if e.response.get("Error", {}).get("Code") != "InvalidKeyPair.NotFound":
             logger.error(f"Failed describing key pair '{key_name}': {e}")
             raise
         logger.info(f"EC2 key pair '{key_name}' not found; importing...")
 
-    # Obtain public key material
-    if public_key_path:
+    # Build public key material
+    if public_key_path and os.path.exists(public_key_path):
         with open(public_key_path, "r", encoding="utf-8") as f:
             public_key_material = f.read().strip()
-    elif private_key_path:
+    elif private_key_path and os.path.exists(private_key_path):
         public_key_material = _load_public_key_from_private(private_key_path)
     else:
-        raise ValueError("You must provide either public_key_path or private_key_path to import key pair.")
+        raise ValueError(
+            "Provide public_key_path or private_key_path to import the EC2 key pair."
+        )
 
-    # Import the key pair
+    # Import key
     try:
         ec2.import_key_pair(
             KeyName=key_name,
-            PublicKeyMaterial=public_key_material.encode("utf-8")
+            PublicKeyMaterial=public_key_material.encode("utf-8"),
         )
         logger.info(f"Imported EC2 key pair '{key_name}' into {region}.")
     except ClientError as e:
-        # If there is a race and another job imported it, be tolerant
         if e.response.get("Error", {}).get("Code") == "InvalidKeyPair.Duplicate":
-            logger.info(f"Key pair '{key_name}' was created concurrently; continuing.")
-            return
-        logger.error(f"Failed to import key pair '{key_name}': {e}")
-        raise
+            logger.info(f"Key pair '{key_name}' created concurrently; continuing.")
+        else:
+            logger.error(f"Failed to import key pair '{key_name}': {e}")
+            raise
 
 
 # -----------------------------
-# Check if an EC2 instance exists
+# Instance helpers
 # -----------------------------
-def instance_exists(instance_id, region):
+def instance_exists(instance_id: str, region: str) -> bool:
     ec2 = boto3.client("ec2", region_name=region)
     try:
         logger.info(f"Checking if instance {instance_id} exists in region {region}...")
         response = ec2.describe_instances(InstanceIds=[instance_id])
-        exists = len(response["Reservations"]) > 0
-        if exists:
-            logger.info(f"Instance {instance_id} exists.")
-        else:
-            logger.info(f"Instance {instance_id} does not exist.")
+        exists = any(r.get("Instances") for r in response.get("Reservations", []))
+        logger.info(
+            f"Instance {instance_id} {'exists' if exists else 'does not exist'}."
+        )
         return exists
     except ClientError as e:
         logger.error(f"Failed to describe instance {instance_id}: {e}")
         return False
 
 
-# -----------------------------
-# Get or create an EC2 instance
-# -----------------------------
-def get_or_create_instance(region, ami_id, instance_type, key_name, tag_key="Name", tag_value="fruitstore-ec2"):
+def get_or_create_instance(
+    region: str,
+    ami_id: str,
+    instance_type: str,
+    key_name: str,
+    *,
+    tag_key: str = "Name",
+    tag_value: str = "fruitstore-ec2",
+    public_key_path: str | None = None,
+    private_key_path: str | None = None,
+) -> str:
+    """Find a running/pending instance by tag; otherwise create one."""
     ec2 = boto3.client("ec2", region_name=region)
 
-    # Ensure the key pair exists before any RunInstances call
-    # We use the private key file that your action writes as 'fruitstore.pem'
+    # Ensure KeyPair exists before RunInstances
     try:
-        ensure_key_pair(region, key_name, private_key_path="fruitstore.pem")
+        ensure_key_pair(
+            region,
+            key_name,
+            public_key_path=public_key_path,
+            private_key_path=private_key_path,
+        )
     except Exception:
         logger.error("Could not ensure/import EC2 key pair; aborting instance creation.")
         raise
 
+    # Reuse existing
     try:
-        logger.info(f"Checking for existing EC2 instance with tag [{tag_key}: {tag_value}] in region {region}...")
+        logger.info(
+            f"Checking for existing EC2 instance with tag [{tag_key}: {tag_value}] in region {region}..."
+        )
         response = ec2.describe_instances(
             Filters=[
                 {"Name": f"tag:{tag_key}", "Values": [tag_value]},
-                {"Name": "instance-state-name", "Values": ["pending", "running"]}
+                {"Name": "instance-state-name", "Values": ["pending", "running"]},
             ]
         )
-        for reservation in response["Reservations"]:
-            for instance in reservation["Instances"]:
-                logger.info(f"Reusing existing instance: {instance['InstanceId']}")
-                return instance["InstanceId"]
+        for reservation in response.get("Reservations", []):
+            for instance in reservation.get("Instances", []):
+                iid = instance["InstanceId"]
+                logger.info(f"Reusing existing instance: {iid}")
+                return iid
     except ClientError as e:
         logger.error(f"Error while describing instances: {e}")
         raise
 
+    # Create new
     try:
         logger.info("No existing instance found. Creating new EC2 instance...")
         instances = ec2.run_instances(
@@ -162,14 +166,17 @@ def get_or_create_instance(region, ami_id, instance_type, key_name, tag_key="Nam
             KeyName=key_name,
             MinCount=1,
             MaxCount=1,
-            TagSpecifications=[{
-                'ResourceType': 'instance',
-                'Tags': [{'Key': tag_key, 'Value': tag_value}]
-            }]
+            TagSpecifications=[
+                {
+                    "ResourceType": "instance",
+                    "Tags": [{"Key": tag_key, "Value": tag_value}],
+                }
+            ],
         )
         instance_id = instances["Instances"][0]["InstanceId"]
         logger.info(f"Created instance: {instance_id}")
 
+        # Wait until running
         waiter = ec2.get_waiter("instance_running")
         logger.info("Waiting for instance to enter 'running' state...")
         waiter.wait(InstanceIds=[instance_id])
@@ -187,17 +194,13 @@ def get_or_create_instance(region, ami_id, instance_type, key_name, tag_key="Nam
         raise
 
 
-
-# -----------------------------
-# Get public IP of an EC2 instance
-# -----------------------------
-def get_instance_public_ip(instance_id, region):
+def get_instance_public_ip(instance_id: str, region: str) -> str | None:
     ec2 = boto3.client("ec2", region_name=region)
     try:
         logger.info(f"Fetching public IP for instance {instance_id}...")
         response = ec2.describe_instances(InstanceIds=[instance_id])
         reservations = response.get("Reservations", [])
-        if reservations and reservations[0]["Instances"]:
+        if reservations and reservations[0].get("Instances"):
             ip = reservations[0]["Instances"][0].get("PublicIpAddress")
             logger.info(f"Public IP of instance {instance_id}: {ip}")
             return ip
@@ -209,9 +212,11 @@ def get_instance_public_ip(instance_id, region):
 
 
 # -----------------------------
-# Run a script over SSH on an EC2 instance
+# SSH + script
 # -----------------------------
-def run_script_over_ssh(ip_address, ssh_key_path, script_path, username="ec2-user"):
+def run_script_over_ssh(
+    ip_address: str, ssh_key_path: str, script_path: str, username: str = "ec2-user"
+) -> None:
     logger.info(f"Attempting SSH connection to {ip_address}...")
 
     try:
@@ -220,21 +225,25 @@ def run_script_over_ssh(ip_address, ssh_key_path, script_path, username="ec2-use
         client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
 
         connected = False
-        for attempt in range(5):
+        for attempt in range(10):
             try:
-                client.connect(hostname=ip_address, username=username, pkey=key, timeout=10)
+                client.connect(
+                    hostname=ip_address, username=username, pkey=key, timeout=15
+                )
                 connected = True
                 break
             except Exception as e:
-                logger.warning(f"Attempt {attempt + 1}: SSH not ready. Retrying... ({e})")
-                time.sleep(5)
+                logger.warning(
+                    f"Attempt {attempt + 1}: SSH not ready. Retrying in 6s... ({e})"
+                )
+                time.sleep(6)
 
         if not connected:
             raise RuntimeError("SSH connection failed after multiple attempts.")
 
         logger.info("SSH connection established.")
 
-        with open(script_path, "r") as file:
+        with open(script_path, "r", encoding="utf-8") as file:
             commands = file.read()
 
         logger.info(f"Executing script: {script_path}")
@@ -255,38 +264,47 @@ def run_script_over_ssh(ip_address, ssh_key_path, script_path, username="ec2-use
 
 
 # -----------------------------
-# Main Execution Block
+# CLI entrypoint
 # -----------------------------
 def main():
-    parser = argparse.ArgumentParser(description="Check or create EC2 and run setup script")
+    parser = argparse.ArgumentParser(description="Check/create EC2 and run setup script")
 
-    parser.add_argument("--region", required=True, help="AWS region")
+    parser.add_argument("--region", required=True, help="AWS region (e.g., us-east-1)")
     parser.add_argument("--ami-id", required=True, help="AMI ID")
     parser.add_argument("--instance-type", required=True, help="EC2 instance type")
-    parser.add_argument("--key-name", required=True, help="Key pair name")
-    parser.add_argument("--tag-value", default="fruitstore-ec2", help="EC2 tag value")
-    parser.add_argument("--ssh-key-path", required=True, help="Path to SSH private key (PEM)")
-    parser.add_argument("--script-path", default="scripts/setup.sh", help="Path to setup script")
+    parser.add_argument("--key-name", required=True, help="EC2 Key Pair name")
+    parser.add_argument("--tag-value", default="fruitstore-ec2", help="EC2 Name tag")
+    parser.add_argument("--ssh-key-path", required=True, help="Path to private key (.pem)")
+    parser.add_argument(
+        "--public-key-path",
+        required=False,
+        help="Path to public key (.pub) – preferred if available",
+    )
+    parser.add_argument(
+        "--script-path", default="scripts/setup.sh", help="Path to setup script"
+    )
 
     args = parser.parse_args()
 
-    # Step 1: Get or create EC2 instance
+    # 1) Create/reuse instance
     instance_id = get_or_create_instance(
         region=args.region,
         ami_id=args.ami_id,
         instance_type=args.instance_type,
         key_name=args.key_name,
         tag_key="Name",
-        tag_value=args.tag_value
+        tag_value=args.tag_value,
+        public_key_path=args.public_key_path,
+        private_key_path=args.ssh_key_path,  # used to derive .pub if needed
     )
 
-    # Step 2: Get public IP
+    # 2) Get public IP
     ip_address = get_instance_public_ip(instance_id, args.region)
     if not ip_address:
         logger.error("Public IP could not be retrieved.")
-        exit(1)
+        raise SystemExit(1)
 
-    # Step 3: Run setup script via SSH
+    # 3) SSH & run script
     run_script_over_ssh(ip_address, args.ssh_key_path, args.script_path)
 
 
