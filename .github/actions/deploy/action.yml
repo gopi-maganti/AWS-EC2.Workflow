@@ -6,7 +6,6 @@ inputs:
   ami-id: { required: true }
   instance-type: { required: true }
   key-name: { required: true }
-  ssh-key: { required: true }
   tag-value: { required: false, default: fruitstore-ec2 }
   script-path: { required: false, default: scripts/setup.sh }
 
@@ -21,12 +20,12 @@ runs:
       shell: bash
 
     - run: |
-        echo "${{ inputs.ssh-key }}" > fruitstore.pem
+        echo "${{ secrets.EC2_SSH_KEY }}" > fruitstore.pem
         chmod 400 fruitstore.pem
       shell: bash
 
     - run: |
-        python src/deploy.py \
+        python src/check_instance.py \
           --region "${{ inputs.region }}" \
           --ami-id "${{ inputs.ami-id }}" \
           --instance-type "${{ inputs.instance-type }}" \

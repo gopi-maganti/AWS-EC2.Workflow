@@ -1,26 +1,45 @@
-name: Deploy
+name: Deploy EC2 and Start Flask Server
 
 on:
   workflow_dispatch:
+    inputs:
+      region:
+        description: "AWS region"
+        required: true
+        default: "us-east-1"
+      ami-id:
+        description: "AMI ID for EC2"
+        required: true
+      instance-type:
+        description: "EC2 instance type"
+        required: true
+        default: "t3.micro"
+      key-name:
+        description: "EC2 key pair name"
+        required: true
+      tag-value:
+        description: "EC2 instance tag name (optional)"
+        required: false
+        default: "fruitstore-ec2"
+      script-path:
+        description: "Path to the SSH setup script"
+        required: false
+        default: "scripts/setup.sh"
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v3
 
-      - name: Set up Python
-        uses: actions/setup-python@v4
-        with:
-          python-version: '3.12'
-
-      - name: Install dependencies
-        run: pip install -r requirements.txt
-
-      - name: Deploy to EC2
+      - name: Run custom EC2 deploy action
         uses: ./.github/actions/deploy
         with:
           region: ${{ github.event.inputs.region }}
-          instance-id: ${{ github.event.inputs.instance_id }}
-          action: ${{ github.event.inputs.action }}
+          ami-id: ${{ github.event.inputs.ami-id }}
+          instance-type: ${{ github.event.inputs.instance-type }}
+          key-name: ${{ github.event.inputs.key-name }}
+          tag-value: ${{ github.event.inputs.tag-value }}
+          script-path: ${{ github.event.inputs.script-path }}
