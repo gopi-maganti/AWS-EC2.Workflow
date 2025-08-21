@@ -21,7 +21,7 @@ runs:
       shell: bash
 
     - run: |
-        echo "${{ secrets.EC2_SSH_KEY }}" > fruitstore.pem
+        echo "${{ inputs.EC2_SSH_KEY }}" > fruitstore.pem
         chmod 400 fruitstore.pem
       shell: bash
 
