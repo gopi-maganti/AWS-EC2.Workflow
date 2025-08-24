@@ -21,14 +21,28 @@ runs:
     - run: pip install -r requirements.txt
       shell: bash
 
-    # write keys; use printf to preserve exact content
-    - name: Write SSH keys
+    - name: Write SSH keys (robust)
       shell: bash
       run: |
-        printf "%s" "${{ inputs.ssh-private-key }}" > fruitstore.pem
-        chmod 400 fruitstore.pem
+        set -euo pipefail
+        RAW="${{ inputs.ssh-private-key }}"
+        if [[ "$RAW" == *"-----BEGIN"* ]]; then
+          # Looks like real PEM with newlines preserved
+          printf '%s\n' "$RAW" > fruitstore.pem
+        else
+          # Might be on one line with \n escapes; convert to real newlines
+          echo "$RAW" | sed 's/\\n/\n/g' > fruitstore.pem
+        fi
+        chmod 600 fruitstore.pem
+        test -s fruitstore.pem || (echo "private key file empty" >&2; exit 1)
+
         if [ -n "${{ inputs.ssh-public-key }}" ]; then
-          printf "%s" "${{ inputs.ssh-public-key }}" > fruitstore.pub
+          PUB="${{ inputs.ssh-public-key }}"
+          if [[ "$PUB" == *"ssh-"* ]]; then
+            printf '%s\n' "$PUB" > fruitstore.pub
+          else
+            echo "$PUB" | sed 's/\\n/\n/g' > fruitstore.pub
+          fi
         fi
 
     - shell: bash
