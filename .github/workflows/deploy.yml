@@ -1,4 +1,4 @@
-name: Deploy
+name: Deploy (SSM)
 
 on:
   workflow_dispatch:
@@ -13,10 +13,7 @@ on:
       instance-type:
         description: "EC2 instance type"
         required: true
-        default: "t2.micro"
-      key-name:
-        description: "EC2 key pair name"
-        required: true
+        default: "t3.micro"
       tag-value:
         description: "Tag value for idempotency"
         required: false
@@ -37,20 +34,37 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-
       - name: Configure AWS credentials (OIDC)
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: arn:aws:iam::611771051034:role/github-actions-deployment-role
           aws-region: ${{ github.event.inputs.region }}
 
-      - name: Run custom EC2 deploy action
+      # (Optional) Get CloudFormation outputs for AMI/Subnet/SG/IAMProfile
+      - name: Get CloudFormation outputs
+        id: cf
+        run: |
+          STACK_NAME=fruitstore-complete-stack
+          outputs=$(aws cloudformation describe-stacks --stack-name $STACK_NAME \
+            --query "Stacks[0].Outputs" --output json)
+
+          echo "Outputs: $outputs"
+
+          for row in $(echo "${outputs}" | jq -r '.[] | @base64'); do
+            _jq() { echo ${row} | base64 --decode | jq -r ${1}; }
+            key=$(_jq '.OutputKey')
+            value=$(_jq '.OutputValue')
+            echo "$key=$value" >> $GITHUB_ENV
+          done
+
+      - name: Deploy EC2 via composite action (SSM)
         uses: ./.github/actions/deploy
         with:
           region:        ${{ github.event.inputs.region }}
-          ami-id:        ${{ github.event.inputs['ami-id'] }}
+          ami-id:        ${{ github.event.inputs['ami-id'] || env.AmiId }}
           instance-type: ${{ github.event.inputs['instance-type'] }}
-          key-name:      ${{ github.event.inputs['key-name'] }}
           tag-value:     ${{ github.event.inputs['tag-value'] }}
           script-path:   ${{ github.event.inputs['script-path'] }}
-          ssh-key:       ${{ secrets.EC2_SSH_KEY }}
+          subnet-id:     ${{ env.SubnetId }}
+          security-group-ids: ${{ env.SecurityGroupIds }}
+          iam-instance-profile: ${{ env.IamInstanceProfile }}
