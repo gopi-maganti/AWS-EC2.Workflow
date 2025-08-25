@@ -1,58 +1,30 @@
-name: "EC2 Deploy Action"
-description: "Check or create EC2 instance and run SSH script to start Flask server"
+name: "EC2 Deploy via SSM"
+description: "Create/reuse EC2 and run setup.sh with SSM (no SSH)"
 
 inputs:
   region:         { required: true }
   ami-id:         { required: true }
   instance-type:  { required: true }
-  key-name:       { required: true }
-  ssh-private-key: { required: true }
-  ssh-public-key: { required: false }
   tag-value:      { required: false, default: fruitstore-ec2 }
   script-path:    { required: false, default: scripts/setup.sh }
+  iam-instance-profile: { required: false }
 
 runs:
   using: "composite"
   steps:
     - uses: actions/setup-python@v4
-      with:
-        python-version: '3.12'
+      with: { python-version: '3.12' }
 
     - run: pip install -r requirements.txt
       shell: bash
 
-    - name: Write SSH keys (robust)
+    - name: Run deploy via SSM
       shell: bash
-      run: |
-        set -euo pipefail
-        RAW="${{ inputs.ssh-private-key }}"
-        if [[ "$RAW" == *"-----BEGIN"* ]]; then
-          # Looks like real PEM with newlines preserved
-          printf '%s\n' "$RAW" > fruitstore.pem
-        else
-          # Might be on one line with \n escapes; convert to real newlines
-          echo "$RAW" | sed 's/\\n/\n/g' > fruitstore.pem
-        fi
-        chmod 600 fruitstore.pem
-        test -s fruitstore.pem || (echo "private key file empty" >&2; exit 1)
-
-        if [ -n "${{ inputs.ssh-public-key }}" ]; then
-          PUB="${{ inputs.ssh-public-key }}"
-          if [[ "$PUB" == *"ssh-"* ]]; then
-            printf '%s\n' "$PUB" > fruitstore.pub
-          else
-            echo "$PUB" | sed 's/\\n/\n/g' > fruitstore.pub
-          fi
-        fi
-
-    - shell: bash
       run: |
         python src/check_instance.py \
           --region "${{ inputs.region }}" \
           --ami-id "${{ inputs.ami-id }}" \
           --instance-type "${{ inputs.instance-type }}" \
-          --key-name "${{ inputs.key-name }}" \
           --tag-value "${{ inputs.tag-value }}" \
-          --ssh-key-path fruitstore.pem \
-          --public-key-path fruitstore.pub \
-          --script-path "${{ inputs.script-path }}"
+          --script-path "${{ inputs.script-path }}" \
+          ${{ inputs.iam-instance-profile && format('--iam-instance-profile "{0}"', inputs.iam-instance-profile) || '' }}
