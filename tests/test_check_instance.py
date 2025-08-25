@@ -1,10 +1,13 @@
 # tests/test_check_instance.py
+import sys
 import os
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
-from botocore.exceptions import ClientError, WaiterError
+from botocore.exceptions import ClientError
+
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from src.check_instance import (
     _find_running_or_pending_by_tag,
@@ -12,6 +15,7 @@ from src.check_instance import (
     wait_for_ssm_managed,
     run_script_via_ssm,
 )
+
 
 REGION = "us-east-1"
 INSTANCE_ID = "i-1234567890abcdef0"
