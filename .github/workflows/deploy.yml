@@ -3,6 +3,9 @@ name: Deploy (SSM)
 on:
   workflow_dispatch:
     inputs:
+      account:
+        description: "AWS Account ID"
+        required: true
       region:
         description: "AWS region"
         required: true
@@ -37,7 +40,7 @@ jobs:
       - name: Configure AWS credentials (OIDC)
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: arn:aws:iam::611771051034:role/github-actions-deployment-role
+          role-to-assume: arn:aws:iam::${{ github.event.inputs.account }}:role/github-actions-deployment-role
           aws-region: ${{ github.event.inputs.region }}
 
       # (Optional) Get CloudFormation outputs for AMI/Subnet/SG/IAMProfile
